@@ -85,7 +85,7 @@ func Float32ToBytes(samples []float32) ([]byte, error) {
 
 // Hilo 1: Captura audio continuamente y lo envía al canal `audioChan`
 func captureAudio() {
-	buffer := make([]int16, bufferSize)
+	// buffer := make([]int16, bufferSize)
 
 	// Buscar el índice del dispositivo "Micrófono externo"
 	deviceName := "Micrófono externo"
@@ -145,14 +145,14 @@ func captureAudio() {
 			continue
 		}
 
-		byteArray, err := Float32ToBytes(buffer)
+		// byteArray, err := Float32ToBytes(buffer)
 
 		if err != nil {
 			log.Println("Error convirtiendo datos a bytes:", err)
 			continue
 		}
 		// 1024 muestras * 1 canal * 4 bytes/muestra = 4096 bytes
-		audioChan <- byteArray
+		// audioChan <- byteArray
 	}
 }
 
