@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"log"
 	"net/http"
 
@@ -16,50 +16,23 @@ const (
 	bufferSize    = 1024  // Tamaño del buffer
 	channel       = 1     // Número de canales
 	bitsPerSample = 16    // 16 bits por muestra
+	deviceName    = "Micrófono externo"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
 var (
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
 	clients   = make(map[*websocket.Conn]bool)
 	audioChan = make(chan []byte)
 )
-
-// Struct para los parametros del Device
-// type StreamDeviceParameters struct {
-// 	Device   *portaudio.DeviceInfo // Dispositivo de audio
-// 	Channels int                   // Número de canales
-// }
-
-// Struct para los parametros del Stream
-type StreamParameters struct {
-	NumInputChannels  int // Número de canales de entrada
-	NumOutputChannels int // Número de canales de salida
-	SampleRate        int // Tasa de muestreo
-	BufferFrames      int // Tamaño del buffer
-	ProcessAudio      int //processAudio,         // Callback para procesar el audio
-}
-
-func OpenAudioStream(params StreamParameters) (*portaudio.Stream, error) {
-	stream, err := portaudio.OpenStream(portaudio.StreamParameters{
-		SampleRate:      float64(params.SampleRate),
-		FramesPerBuffer: params.BufferFrames,
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("error abriendo stream de audio: %v", err)
-	}
-
-	return stream, nil
-}
 
 // FindDeviceIndex busca un dispositivo de audio por nombre y devuelve su índice.
 func FindDeviceIndex(deviceName string) (int, error) {
 	devices, err := portaudio.Devices()
 	if err != nil {
-		return -1, fmt.Errorf("error obteniendo los dispositivos: %v", err)
+		return -1, errors.New("error obteniendo los dispositivos")
 	}
 
 	for _, device := range devices {
@@ -69,26 +42,22 @@ func FindDeviceIndex(deviceName string) (int, error) {
 	}
 
 	// Si no lo encuentra, devuelve un error.
-	return -1, fmt.Errorf("dispositivo no encontrado: %s", deviceName)
+	return -1, errors.New("dispositivo no encontrado")
 }
 
-// Float32ToBytes convierte un slice de float32 (muestras de audio) en un slice de bytes.
-func Float32ToBytes(samples []float32) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	for _, sample := range samples {
-		if err := binary.Write(buf, binary.LittleEndian, sample); err != nil {
-			return nil, err
-		}
+func Int16toArrayBytes(buffer []int16) ([]byte, error) {
+	byteBuffer := new(bytes.Buffer)
+	err := binary.Write(byteBuffer, binary.LittleEndian, buffer)
+	if err != nil {
+		log.Println("Error converting int16 to bytes:", err)
 	}
-	return buf.Bytes(), nil
+	return byteBuffer.Bytes(), nil
 }
 
 // Hilo 1: Captura audio continuamente y lo envía al canal `audioChan`
 func captureAudio() {
-	// buffer := make([]int16, bufferSize)
 
 	// Buscar el índice del dispositivo "Micrófono externo"
-	deviceName := "Micrófono externo"
 	deviceIndex, err := FindDeviceIndex(deviceName)
 
 	if err != nil {
@@ -106,59 +75,59 @@ func captureAudio() {
 	log.Printf("Usando dispositivo: %s (Index: %d, Canales: %d, Canales de salida: %d, SampleRate: %f)",
 		defaultDevice.Name, defaultDevice.Index, defaultDevice.MaxInputChannels, defaultDevice.MaxOutputChannels, defaultDevice.DefaultSampleRate)
 
-	// Configurar los parámetros del dispositivo
-	// deviceParams := StreamDeviceParameters{
-	// 	Device:   defaultDevice,
-	// 	Channels: channel,
-	// }
-
-	// Configurar los parámetros del stream
-	streamParams := StreamParameters{
-		NumInputChannels:  channel,    // Número de canales de entrada
-		NumOutputChannels: 0,          // Número de canales de salida
-		SampleRate:        sampleRate, // Tasa de muestreo
-		BufferFrames:      bufferSize, // Tamaño del buffer
-	}
+	// Se crea el buffer de entrada
+	buffer := make([]int16, bufferSize)
 
 	// Abrir stream de audio usando la función del paquete util
-	stream, err := OpenAudioStream(streamParams)
+	stream, err := portaudio.OpenDefaultStream(channel, 0, float64(sampleRate), bufferSize, buffer)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Error abriendo el stream:", err)
 	}
 	defer stream.Close()
 
-	if err := stream.Start(); err != nil {
-		log.Fatal("Error iniciando el stream:", err)
+	err = stream.Start()
+	if err != nil {
+		log.Fatal(err)
 	}
-	defer stream.Stop()
 
 	log.Println("Capturando audio...")
 
 	// Capturar audio en un bucle infinito
 	for {
 		// Leer datos del stream de audio
-		err = stream.Read()
-
-		// Error handling
+		err := stream.Read()
 		if err != nil {
 			log.Fatalf("Error leyendo del stream: %v", err)
 			continue
 		}
 
-		// byteArray, err := Float32ToBytes(buffer)
+		// Verificar los primeros 5 valores del buffer
+		// log.Printf("🎙️ Muestras de audio int16: %v\n", buffer[:5])
 
+		audioData, err := Int16toArrayBytes(buffer)
 		if err != nil {
-			log.Println("Error convirtiendo datos a bytes:", err)
+			log.Println("Error convirtiendo buffer:", err)
 			continue
 		}
-		// 1024 muestras * 1 canal * 4 bytes/muestra = 4096 bytes
-		// audioChan <- byteArray
+
+		// Verificar si el audioData convertido tiene datos
+		log.Printf("📦 Datos binarios (primeros 5 bytes): %v\n", audioData[:5])
+		// 1024 muestras * 1 canal * 2 bytes/muestra = 2048 bytes
+		audioChan <- audioData
 	}
 }
 
 // Hilo 2: Escucha `audioChan` y reenvía los datos por WebSocket
 func broadcastAudio() {
 	for audioData := range audioChan {
+		// Verificar si el buffer recibido tiene datos
+		// if len(audioData) > 0 {
+		// 	log.Printf("📤 Enviando audio (%d bytes). Muestra: %v", len(audioData), audioData[:10])
+		// } else {
+		// 	log.Println("⚠️ Se intentó enviar un buffer vacío")
+		// }
+
+		// Enviar audio a los clientes conectados
 		for client := range clients {
 			err := client.WriteMessage(websocket.BinaryMessage, audioData)
 			if err != nil {
